@@ -55,15 +55,19 @@ fn main() -> Result<()> {
             "views".into(),
         ]);
         let csv = csv.filter(
-            col("views").gt(lit(config.min_views))
-                + col("language").eq(lit("en"))
-                + (|| -> Expr {
-                    let contains_lyrics = config
-                        .keywords
-                        .iter()
-                        .map(|c| col("lyrics").str().contains_literal(lit(c.as_str())));
-                    let res = contains_lyrics.fold(Expr::default(), |accum, item| accum * item);
-                    res
+            col("views")
+                .gt(lit(config.min_views))
+                .and(col("language").eq(lit("en")))
+                .and(|| -> Expr {
+                    let contains_lyrics =
+                        config.keywords.iter().map(|c| c.to_lowercase()).map(|c| {
+                            col("lyrics")
+                                .str()
+                                .to_lowercase()
+                                .str()
+                                .contains_literal(lit(c.as_str()))
+                        });
+                    contains_lyrics.fold(Expr::default(), |accum, item| accum.or(item))
                 }()),
         );
         csv.select(&["track_name".into(), "artist_name".into()])
@@ -76,11 +80,10 @@ fn main() -> Result<()> {
             let csv = LazyCsvReader::new(&config.files.artists)
                 .has_header(true)
                 .finish()?;
-            let csv = csv.select(&[
+            csv.select(&[
                 col("name").str().to_lowercase().alias("artist_name"),
                 col("id").alias("artist_id"),
-            ]);
-            csv
+            ])
         };
 
         let tracks = {
@@ -107,16 +110,17 @@ fn main() -> Result<()> {
                 "energy".into(),
                 "tempo".into(),
             ]);
-            const DANCEABILITY: (f64, f64) = (0.45, 0.99);
+            const DANCEABILITY: (f32, f32) = (0.45, 0.99);
             const ENERGY: (f32, f32) = (0.45, 0.75);
             const TEMPO: (f32, f32) = (110.0, 140.0);
             csv.filter(
-                col("danceability").gt_eq(DANCEABILITY.0)
-                    * col("danceability").lt_eq(DANCEABILITY.1)
-                    * col("energy").gt_eq(ENERGY.0)
-                    * col("energy").lt_eq(ENERGY.1)
-                    * col("tempo").gt_eq(TEMPO.0)
-                    * col("tempo").lt_eq(TEMPO.1),
+                col("danceability")
+                    .gt_eq(DANCEABILITY.0)
+                    .and(col("danceability").lt_eq(DANCEABILITY.1))
+                    .and(col("energy").gt_eq(ENERGY.0))
+                    .and(col("energy").lt_eq(ENERGY.1))
+                    .and(col("tempo").gt_eq(TEMPO.0))
+                    .and(col("tempo").lt_eq(TEMPO.1)),
             )
         };
 
@@ -128,32 +132,32 @@ fn main() -> Result<()> {
             let csv = csv.select(&["track_id".into(), "artist_id".into()]);
             let csv = csv.inner_join(artists, col("artist_id"), col("artist_id"));
             let csv = csv.inner_join(tracks, col("track_id"), col("track_id"));
-            let csv = csv.inner_join(audio_features, col("track_id"), col("track_id"));
-            csv
+            csv.inner_join(audio_features, col("track_id"), col("track_id"))
         };
 
-        let danceability_tracks = {
+        {
             let ta = track_artists.select(&[
                 "artist_name".into(),
                 "track_name".into(),
                 "danceability".into(),
                 "energy".into(),
-                lit("https://open.spotify.com/track/") + col("track_id"),
+                (lit("https://open.spotify.com/track/") + col("track_id")).alias("track_id"),
             ]);
             use polars::lazy::dsl::all;
             use polars::lazy::prelude::*;
             let other = ta.groupby([col("artist_name"), col("track_name")]);
             other.agg([all().sort_by([col("danceability")], [true]).first()])
-        };
-        danceability_tracks
+        }
     };
 
+    println!("building result...");
     use polars::prelude::SortOptions;
     let mut matches = danceable_tracks
-        .inner_join(
+        .join(
             genius_song_lyrics,
-            col("artist_name") + col("track_name"),
-            col("artist_name") + col("track_name"),
+            [col("artist_name"), col("track_name")],
+            [col("artist_name"), col("track_name")],
+            polars::prelude::JoinType::Inner,
         )
         .sort(
             "danceability",
@@ -164,6 +168,7 @@ fn main() -> Result<()> {
         )
         .collect()?;
 
+    println!("writing to file...");
     let output_file = std::fs::File::create(config.output)?;
     use polars::prelude::SerWriter;
     let mut writer = CsvWriter::new(output_file);
