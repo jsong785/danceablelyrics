@@ -6,5 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = "4.3.0"
-polars = "0.29.0"
+anyhow = "1.0.71"
+clap = { version = "4.3.0", features = ["color", "derive", "help", "error-context", "suggestions"] }
+mimalloc = { version = "*", default-features = false }
+polars = { version = "0.29.0", features = ["csv", "lazy", "lazy_regex", "performant", "streaming", "strings"] }
